@@ -1,0 +1,264 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+<title>Monitoramento de servidor</title>
+<script src="//ajax.googleapis.com/ajax/libs/jquery/1.9.0/jquery.min.js"></script>
+<script type="text/javascript" src="./excanvas.compiled.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.common.core.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.common.context.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.common.annotate.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.common.tooltips.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.common.zoom.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.common.resizing.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.line.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.vprogress.js"></script>
+<script type="text/javascript" src="./rgraph/RGraph.pie.js"></script>
+<script type="text/javascript">
+	var iMax = 50;//Máximo de registro na lista
+	var aMemUsage = new Array;//Lista de registros do uso de memória
+	var aCpuUsage = new Array;//Lista de registros do uso de CPU
+	var aNetworkUsage = new Array; //Lista de registros do uso da rede
+	var fStatisticsTimer = null;//Timer de atualização dos dados
+	var oConnection = new WebSocket('ws://127.0.0.1:32221/', "server-monitor");
+
+	oConnection.onerror = function(oError){
+		alert("Ocorreu erro com a conexão.");
+	};
+	
+	oConnection.onmessage = function(oBuffer){
+		var aStat = eval("(" + oBuffer.data + ")");
+		$("#pc-information tr").remove();
+
+		$("#pc-information").append("<tr><td class='header'>Componente<td class='header'>Em uso</td><td class='header'>Liberado</td><td class='header' style='width: 335px'>Gráfico</td></tr>");
+		
+					
+		for(var iKey in aStat.cpu){	
+			var iTotalCPUUsage = 0;
+			var iTotalCPUUsage2 = 0;
+			var iTotalIdle = aStat.cpu2[iKey].times["idle"] - aStat.cpu[iKey].times["idle"]
+					
+			for(var sType in aStat.cpu[iKey].times){
+				if(sType != 'idle'){
+					iTotalCPUUsage += aStat.cpu[iKey].times[sType];		
+					iTotalCPUUsage2 += aStat.cpu2[iKey].times[sType];		
+				}
+			}
+
+			var fUsage = ((iTotalCPUUsage2 - iTotalCPUUsage)*100) / iTotalIdle;
+
+			if(fUsage > 100)
+				fUsage = 100;
+			
+			var fFree = 100 - fUsage;
+						
+			$("#pc-information").append("<tr>"+
+										"	<td>Core "+(parseInt(iKey)+1)+" "+aStat.cpu[iKey].model+"</td>"+
+										"	<td>"+number_format(fUsage, 2, ".", ",")+"%</td>"+
+										"	<td>"+number_format(fFree, 2, ".", "")+"%</td>"+
+										"	<td>"+
+										"		<table cellpadding='2' cellspacing='2' border='0'>"+
+										"			<tr>"+
+										"			<td style='width:50px' align='center'>"+
+										"				<canvas width='35' height='160' id='cpuuseperc_"+iKey+"'>[No canvas support]</canvas>"+
+										"				<span id='cpuuseperc_label_"+iKey+"'>0%</span>"+
+										"			</td>"+
+										"			<td align='center'><canvas id='cpuuse_"+iKey+"' width='335' height='200'>[Please wait...]</canvas></td>"+
+										"			</tr>"+
+										"		</table>"+
+										"	</td>"+
+										"</tr>");
+
+			//Atualizando gráfico do uso de CPU
+			aCpuUsage.push(fUsage);
+
+			if(aCpuUsage.length >= iMax)
+				aCpuUsage.shift();
+
+			RefreshGraphLine("cpuuse_"+iKey, aCpuUsage, "", "red", "#FFCCCC");
+			RefreshGraphVProgress("cpuuseperc_"+iKey, "cpuuseperc_label_"+iKey, aCpuUsage);
+		}
+				
+		$("#pc-information").append("<tr>"+
+									"	<td>Memória RAM</td>"+
+									"	<td>"+number_format(aStat.mem.usage, 0, "", ".")+" bytes ("+bytesToSize(aStat.mem.usage)+")</td>"+
+									"	<td>"+number_format(aStat.mem.free, 0, "", ".")+" bytes ("+bytesToSize(aStat.mem.free)+")</td>"+
+									"	<td>"+
+									"		<table cellpadding='2' cellspacing='2' border='0'>"+
+									"			<tr>"+
+									"			<td style='width:50px' align='center'>"+
+									"				<canvas width='35' height='160' id='memuseperc'>[No canvas support]</canvas>"+
+									"				<span id='memuseperc_label'>0%</span>"+
+									"			</td>"+
+									"			<td align='center'><canvas id='memuse' width='335' height='200'>[Please wait...]</canvas></td>"+
+									"			</tr>"+
+									"		</table>"+
+									"	</td>"+
+									"</tr>");
+
+		//Atualizando gráfico do uso de memória
+		var fPercUseMem = (parseInt(aStat.mem.usage)*100)/parseInt(aStat.mem.total);
+		aMemUsage.push(fPercUseMem);
+
+		if(aMemUsage.length >= iMax)
+			aMemUsage.shift();
+
+		RefreshGraphLine("memuse", aMemUsage, "", "green", "#CCFFCE");
+		RefreshGraphVProgress("memuseperc", "memuseperc_label", aMemUsage);
+
+		//HD
+		$("#pc-information").append("<tr><td class='header'>Hard disk<td class='header'>Em uso</td><td class='header'>Liberado</td><td class='header'>Gráfico</td></tr>");
+		
+		for(var iKey in aStat.disk){
+			$("#pc-information").append("<tr>"+
+										"	<td>Hard disk "+iKey+":</td>"+
+										"	<td>"+number_format(aStat.disk[iKey].total-aStat.disk[iKey].free, 0, "", ".")+" bytes ("+bytesToSize(aStat.disk[iKey].total-aStat.disk[iKey].free)+")</td>"+
+										"	<td>"+number_format(aStat.disk[iKey].free, 0, "", ".")+" bytes ("+bytesToSize(aStat.disk[iKey].free)+")</td>"+
+										"	<td>"+
+										"		<table cellpadding='2' cellspacing='2' border='0'>"+
+										"			<tr>"+
+										"				<td align='center'><canvas id='hd_"+iKey+"' width='335' height='200'>[Please wait...]</canvas></td>"+
+										"			</tr>"+
+										"		</table>"+
+										"	</td>"+
+										"</tr>");
+
+			RefreshGraphPie("hd_"+iKey, [(aStat.disk[iKey].total-aStat.disk[iKey].free), parseInt(aStat.disk[iKey].free)], "");
+		}
+		
+		//Network
+		$("#pc-information").append("<tr><td class='header' colspan='4'>Interfaces de rede</tr>");
+		
+		for(var iKey in aStat.network)
+			$("#pc-information").append("<tr><td colspan='4'>"+iKey+" ("+aStat.network[iKey][1].address+" - "+aStat.network[iKey][0].address+")</td></tr>");				
+		
+	};
+	
+	/**
+	 * Função para atualizar gráficos do tipo Line
+	 * 
+	 * @param string sId
+	 * @param string sTitle
+	 * @param string sColor
+	 * @param string sFillColor
+	 * @return void
+	 */ 
+	function RefreshGraphLine(sId, aStatics, sTitle, sColor, sFillColor){
+		RGraph.Clear(document.getElementById(sId));
+		
+		var oTmpGraph = new RGraph.Line(sId, aStatics);
+	    oTmpGraph.Set('chart.colors', [sColor]);
+	    oTmpGraph.Set('chart.tickmarks', null);
+	    oTmpGraph.Set('chart.linewidth', 1);
+	    oTmpGraph.Set('chart.background.barcolor1', 'white');
+	    oTmpGraph.Set('chart.background.grid.autofit', true);
+	    oTmpGraph.Set('chart.filled', 'true');
+	    oTmpGraph.Set('chart.fillstyle', [sFillColor]);
+	    oTmpGraph.Set('chart.tooltips.effect', 'contract');
+	    oTmpGraph.Set('chart.text.angle', 45);
+	    oTmpGraph.Set('chart.gutter', 45);
+	    oTmpGraph.Set('chart.units.post', '%');
+	    oTmpGraph.Set('chart.noaxes', true);
+	    oTmpGraph.Set('chart.background.grid', true);
+	    oTmpGraph.Set('chart.ymax', 100);
+	    oTmpGraph.Set('chart.title.xaxis.pos', 0.5);
+	    oTmpGraph.Set('chart.title.xaxis', sTitle);
+	    oTmpGraph.Draw();
+	}
+
+	/**
+	 * Função para atualizar gráficos do tipo VProgress
+	 * 
+	 * @param string sId
+	 * @param string sIdLabel
+	 * @param array aStatics
+	 * @return void
+	 */ 
+	function RefreshGraphVProgress(sId, sIdLabel, aStatics){
+		RGraph.Clear(document.getElementById(sId));
+	    
+	    var oTmpGraph = new RGraph.VProgress(sId, parseInt(aStatics[aStatics.length-1]), 100);
+	    oTmpGraph.Set('chart.tickmarks', false);
+	    oTmpGraph.Set('chart.margin', 3);
+	    oTmpGraph.Set('chart.tickmarks.inner', false);
+	    oTmpGraph.Set('chart.label.inner', false);
+	    oTmpGraph.Set('chart.gutter', 20);
+	    oTmpGraph.Set('chart.units.post', '%');
+	    oTmpGraph.Draw();
+
+	    $("#"+sIdLabel).html(parseInt(aStatics[aStatics.length-1])+"%");
+	}		
+
+	/**
+	 * Função para atualizar gráfico do tipo PIE
+	 * 
+	 * @param string sId
+	 * @param array aStatics
+	 * @param string sTitle
+	 */ 
+	function RefreshGraphPie(sId, aStatics, sTitle){
+		RGraph.Clear(document.getElementById(sId));
+		
+		var oTmpGraph = new RGraph.Pie(sId, aStatics, 100);
+		oTmpGraph.Set('chart.colors', ['#0000ff', '#ff00ff']);
+        oTmpGraph.Set('chart.labels.sticks', true);
+        oTmpGraph.Set('chart.labels.sticks.length', 15);
+        oTmpGraph.Set('chart.tooltips', ['Em uso ('+bytesToSize(aStatics[0])+')', 'Livre('+bytesToSize(aStatics[1])+')']);
+        oTmpGraph.Set('chart.labels', ['Em uso', 'Livre']);
+        oTmpGraph.Set('chart.radius', 100);
+        oTmpGraph.Set('chart.strokestyle', 'rgba(0,0,0,0.1)');
+        oTmpGraph.Draw();
+	}
+
+	/**
+	 * Função para converter bytes
+	 *
+	 * @param integer bytes
+	 * @see http://scratch99.com/web-development/javascript/convert-bytes-to-mb-kb/
+	 */ 
+	function bytesToSize(bytes) {
+	    var sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+	    if (bytes == 0) return 'n/a';
+	    var i = parseInt(Math.floor(Math.log(bytes) / Math.log(1024)));
+	    return Math.round(bytes / Math.pow(1024, i), 2) + ' ' + sizes[i];
+	};	
+
+	/**
+	 * Função do PHP.js para formatar numeros
+	 *
+	 * @see http://phpjs.org/functions/number_format/
+	 */ 
+	function number_format (number, decimals, dec_point, thousands_sep){
+		  number = (number + '').replace(/[^0-9+\-Ee.]/g, '');
+		  var n = !isFinite(+number) ? 0 : +number,
+		    prec = !isFinite(+decimals) ? 0 : Math.abs(decimals),
+		    sep = (typeof thousands_sep === 'undefined') ? ',' : thousands_sep,
+		    dec = (typeof dec_point === 'undefined') ? '.' : dec_point,
+		    s = '',
+		    toFixedFix = function (n, prec) {
+		      var k = Math.pow(10, prec);
+		      return '' + Math.round(n * k) / k;
+		    };
+		  // Fix for IE parseFloat(0.55).toFixed(0) = 0;
+		  s = (prec ? toFixedFix(n, prec) : '' + Math.round(n)).split('.');
+		  if (s[0].length > 3) {
+		    s[0] = s[0].replace(/\B(?=(?:\d{3})+(?!\d))/g, sep);
+		  }
+		  if ((s[1] || '').length < prec) {
+		    s[1] = s[1] || '';
+		    s[1] += new Array(prec - s[1].length + 1).join('0');
+		  }
+		  return s.join(dec);
+	}	
+</script>
+<style type="text/css">
+	body{ background-color: #EFEFEF; }
+	#pc-information{ border: 1px solid #CCC; width: 100%; -webkit-border-radius: 5px; -moz-border-radius: 5px; border-radius: 5px; }
+	#pc-information td{ padding: 10px; background-color: #FFF;}
+	.header{ background-color: #EFEFEF !important;	}
+</style>
+</head>
+<body>
+<table border="0" cellpadding="2" cellspacing="2" id="pc-information"></table>
+</body>
+</html>
